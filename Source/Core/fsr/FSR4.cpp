@@ -29,8 +29,10 @@ namespace FidelityFX
       constexpr int fsr4_default_phase_count = 16;
       // Max number of DX12 command lists in flight
       constexpr size_t fsr4_command_allocators_count = 4;
-      // Max CPU wait on the DX12 GPU work (these waits are rare), to never hang the game if the GPU is stuck
+      // Max CPU wait on the DX12 GPU work, to never hang the game if the GPU is stuck.
+      // These waits are rare, except on Wine, where we wait every frame, so a longer timeout avoids disabling FSR 4 on a single long hitch (e.g. shaders compilation).
       constexpr ULONGLONG fsr4_fence_timeout_ms = 2000;
+      constexpr ULONGLONG fsr4_wine_frame_fence_timeout_ms = 10000;
 
       // ReShade's interface ID to query the original object from its proxies (see "com_utils.hpp")
       constexpr GUID IID_UnwrappedObject = {0x7f2c9a11, 0x3b4e, 0x4d6a, {0x81, 0x2f, 0x5e, 0x9c, 0xd3, 0x7a, 0x1b, 0x42}};
@@ -108,6 +110,7 @@ namespace FidelityFX
       std::function<ID3D11ComputeShader*()> get_depth_copy_shader;
 
       unsigned int logged_errors = 0;
+      bool is_wine = false; // Running on Wine/Proton (DXVK + vkd3d-proton), where DX11 GPU waits on DX12 fences can deadlock
       bool poisoned = false; // The GPU sync broke, so we can't know when the DX12 work completes, never use or release the resources again
 
       void Poison()
@@ -123,9 +126,9 @@ namespace FidelityFX
       }
 
       // Returns false if the GPU didn't reach the value in time (and the device wasn't removed), in which case the resources it uses can't be safely released
-      bool WaitForFence(UINT64 value)
+      bool WaitForFence(UINT64 value, ULONGLONG timeout_ms = fsr4_fence_timeout_ms)
       {
-         const ULONGLONG deadline = GetTickCount64() + fsr4_fence_timeout_ms;
+         const ULONGLONG deadline = GetTickCount64() + timeout_ms;
          while (fence_12->GetCompletedValue() < value)
          {
             if (FAILED(device_12->GetDeviceRemovedReason()))
@@ -253,6 +256,7 @@ namespace FidelityFX
 
       bool Init(ID3D11Device* device, IDXGIAdapter* adapter)
       {
+         is_wine = GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "wine_get_version") != nullptr;
          ffx_create_context = reinterpret_cast<PfnFfxCreateContext>(GetProcAddress(ffx_module, "ffxCreateContext"));
          ffx_destroy_context = reinterpret_cast<PfnFfxDestroyContext>(GetProcAddress(ffx_module, "ffxDestroyContext"));
          ffx_query = reinterpret_cast<PfnFfxQuery>(GetProcAddress(ffx_module, "ffxQuery"));
@@ -368,7 +372,7 @@ namespace FidelityFX
          if (!CreateSharedTexture(test_texture, 1, 1, DXGI_FORMAT_R8G8B8A8_UNORM, true))
             return false;
 
-         Log(reshade::log::level::info, std::format("Initialized DX11->DX12 interop with FSR {}{}", *fsr4_version, device_12_wrapped ? " (unwrapped the ReShade DX12 device)" : ""));
+         Log(reshade::log::level::info, std::format("Initialized DX11->DX12 interop with FSR {}{}{}", *fsr4_version, device_12_wrapped ? " (unwrapped the ReShade DX12 device)" : "", is_wine ? " (Wine, syncing on the CPU)" : ""));
          return true;
       }
    };
@@ -663,8 +667,12 @@ namespace FidelityFX
       {
          custom_data->fence_value = output_ready_fence_value;
          custom_data->command_allocators_fence_values[allocator_index] = output_ready_fence_value;
-         // DX11: wait for DX12 (on the GPU) and copy back the output
-         hr = command_list_11_4->Wait(custom_data->fence_11.Get(), output_ready_fence_value);
+         // DX11: wait for DX12 and copy back the output. On the GPU, except on Wine, where it's done on the CPU (as OptiScaler does), as DXVK GPU waits on vkd3d-proton fences can deadlock.
+         // The CPU wait costs some performance (the CPU can't run ahead of the GPU), but only on Wine.
+         if (custom_data->is_wine)
+            hr = custom_data->WaitForFence(output_ready_fence_value, fsr4_wine_frame_fence_timeout_ms) ? S_OK : HRESULT_FROM_WIN32(WAIT_TIMEOUT);
+         else
+            hr = command_list_11_4->Wait(custom_data->fence_11.Get(), output_ready_fence_value);
       }
       if (FAILED(hr))
       {
