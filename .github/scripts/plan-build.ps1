@@ -51,9 +51,11 @@ if ($EventName -eq "pull_request") {
     }
 }
 
+# Fork-only build branch: only Granblue, Publishing-Release x64
+$selected = @{ "Granblue Fantasy Relink" = $true }
 $include = @()
-foreach ($config in "Development-Debug", "Development-Release", "Test-Release", "Publishing-Release") {
-    foreach ($platform in "x64", "Win32") {
+foreach ($config in @("Publishing-Release")) {
+    foreach ($platform in @("x64")) {
         $list = @($projects.Values | Where-Object { $_.Cells -contains "$config|$platform" -and ($null -eq $selected -or $selected[$_.Name]) } | Sort-Object Name)
         if ($list.Count -eq 0) { continue }
         $shards = if ($platform -eq "x64") { [Math]::Min($x64Shards, $list.Count) } else { 1 }
