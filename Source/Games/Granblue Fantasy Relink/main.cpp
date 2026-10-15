@@ -63,7 +63,7 @@ public:
       luma_data_cbuffer_index = 10;
 
       std::vector<ShaderDefineData> game_shader_defines_data = {
-         {"TONEMAP_AFTER_TAA", '1', true, false, "If set to 1, tonemapping will be applied after TAA", 1},
+         {"TONEMAP_AFTER_TAA", '0', true, false, "If set to 1, tonemapping will be applied after TAA", 1},
       };
       shader_defines_data.append_range(game_shader_defines_data);
       GetShaderDefineData(UI_DRAW_TYPE_HASH).SetDefaultValue('2');
@@ -1453,8 +1453,10 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
       shader_hashes_UIBackgroundDownscale.pixel_shaders.emplace(std::stoul("C4013554", nullptr, 16));
 #endif
 
-      swapchain_format_upgrade_type = TextureFormatUpgradesType::AllowedEnabled;
-      swapchain_upgrade_type = SwapchainUpgradeType::scRGB;
+      // FSR 4 only build: keep the game's own SDR swapchain, post process order and look
+      swapchain_format_upgrade_type = TextureFormatUpgradesType::None;
+      swapchain_upgrade_type = SwapchainUpgradeType::None;
+      force_disable_display_composition = true;
       texture_format_upgrades_type = TextureFormatUpgradesType::AllowedEnabled;
 
       texture_upgrade_formats = {

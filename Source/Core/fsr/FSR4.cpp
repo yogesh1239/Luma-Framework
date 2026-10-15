@@ -103,6 +103,8 @@ namespace FidelityFX
       UINT64 fence_value = 0; // The last signaled one
       HANDLE fence_event = nullptr; // For the rare CPU waits (e.g. on resources destruction)
 
+      std::vector<uint64_t> fsr4_version_ids; // Newest first, as returned by the loader
+
       FSR4SharedTexture textures[TexturesCount];
       ComPtr<ID3D11UnorderedAccessView> depth_uav;
       ComPtr<ID3D11Resource> depth_source; // Kept alive to make sure the pointer can't be reused by another resource while we cache its view
@@ -361,6 +363,14 @@ namespace FidelityFX
                version_names.clear();
          }
          const auto fsr4_version = std::find_if(version_names.begin(), version_names.end(), [](const char* name) { return name && name[0] == '4' && name[1] == '.'; });
+         std::string all_versions;
+         for (size_t i = 0; i < version_names.size(); i++)
+         {
+            all_versions += std::string(i ? ", " : "") + (version_names[i] ? version_names[i] : "?");
+            if (version_names[i] && version_names[i][0] == '4' && version_names[i][1] == '.')
+               fsr4_version_ids.push_back(version_ids[i]);
+         }
+         Log(reshade::log::level::info, "Available upscaler versions: " + all_versions);
          if (fsr4_version == version_names.end())
          {
             Log(reshade::log::level::info, "No FSR 4 upscaler available on this GPU/driver (is \"amd_fidelityfx_upscaler_dx12.dll\" next to the loader dll?)");
@@ -494,7 +504,19 @@ namespace FidelityFX
       api_version_desc.version = FFX_UPSCALER_VERSION;
       backend_desc.header.pNext = &api_version_desc.header;
 
-      const ffxReturnCode_t ret = custom_data->ffx_create_context(&custom_data->context, &context_desc.header, nullptr);
+      // Try each FSR 4 version, newest first: under Wine the default pick can refuse to create a context
+      ffxReturnCode_t ret = FFX_API_RETURN_ERROR;
+      ffxOverrideVersion override_version = {};
+      override_version.header.type = FFX_API_DESC_TYPE_OVERRIDE_VERSION;
+      for (const uint64_t version_id : custom_data->fsr4_version_ids)
+      {
+         override_version.versionId = version_id;
+         api_version_desc.header.pNext = &override_version.header;
+         ret = custom_data->ffx_create_context(&custom_data->context, &context_desc.header, nullptr);
+         if (ret == FFX_API_RETURN_OK)
+            break;
+         custom_data->LogError(std::format("ffxCreateContext failed for version id {:#x}, error = {}", version_id, ret));
+      }
       if (ret != FFX_API_RETURN_OK)
       {
          custom_data->LogError(std::format("ffxCreateContext failed (render {}x{}, output {}x{}), error = {}", settings_data.render_width, settings_data.render_height, settings_data.output_width, settings_data.output_height, ret));
